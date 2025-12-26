@@ -74,9 +74,18 @@ customer_id,account_id,original_balance,interest_rate,annual_interest,new_balanc
 **Testing**
 - 47 tests total (26 unit + 21 data)
 
-## What I'd implement next
+## Assumptions
 
-1. Modularize to support multiple backends (DuckDb/Postgres/Databricks etc) 
+- **Balance**: Imputed NULL values as $0.00 with transparency flag
+- **HasLoan**: Imputed NULL flags as False
+- **Data Export**: Full snapshot export while rest of ingestion is incremental
+- **Relationship**: Assumed 1:N relationship between customer and account
+- **Year-End Status**: Accounts file represents customer account status at year-end. For interest calculation, assumed each account was active throughout the full year
+- **Data Cleansing**: Various cleansing rules applied following standard best practices (trim whitespace, normalize casing, type conversion)
+
+## Next Steps
+
+1. Modularize to support multiple backends (DuckDb/Postgres/Databricks etc)
 2. Schema Evaluation and Drift Detection
 3. Observability: Lineage, Monitoring, Metrics, Quality Scores/Metrics
 4. Data Modeling: SCD Type 2 for Dimensions
