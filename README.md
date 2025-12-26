@@ -39,26 +39,28 @@ docker --version  # Should be 20.10+
 
 There should be a CSV with customer IDs, balances, interest rates, and new balances.
 
-## I/O and UI
+## I/O and Monitoring
 
-**Input files:** `data/sample/accounts.csv` and `customers.csv`
-**Output file:** Container path `/opt/dagster/data/output/account_summary.csv`
-**Dagster UI:** http://localhost:3000 (optional, for monitoring)
+| Type | Location |
+|------|----------|
+| **Input files** | `data/sample/accounts.csv`, `customers.csv` |
+| **Output file** | `/opt/dagster/data/output/account_summary.csv` |
+| **Dagster UI** | http://localhost:3000 |
 
-==========================================
-  Pipeline Complete!
-==========================================
+### Sample Output
 
--- Output file generated: /opt/dagster/data/output/account_summary.csv
-/*
-=== account_summary.csv ===
+After running the pipeline, `account_summary.csv` will contain:
+
+```csv
 customer_id,account_id,original_balance,interest_rate,annual_interest,new_balance
 101,A001,10000.0,0.02,200.0,10200.0
 103,A003,10000.0,0.02,200.0,10200.0
 104,A004,0.0,0.01,0.0,0.0
 105,A006,15000.0,0.015,225.0,15225.0
 106,A007,5000.0,0.015,75.0,5075.0
-*/
+```
+
+**Note:** Account A004 shows $0.00 balance (NULL value was imputed with transparency flag)
 
 ## Design Decisions
 
