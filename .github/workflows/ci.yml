@@ -23,8 +23,8 @@ jobs:
           
       - name: Lint Python
         run: |
-          ruff check dagster/
-          black --check dagster/
+          ruff check banking_pipeline/
+          black --check banking_pipeline/
           
       - name: Lint SQL
         run: |
