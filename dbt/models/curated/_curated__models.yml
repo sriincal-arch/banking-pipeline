@@ -1,0 +1,419 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: >
+      Customer dimension table containing customer attributes.
+      SCD Type 1 - overwrites with latest values.
+    columns:
+      - name: customer_id
+        description: Primary key - unique customer identifier
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: Full name of the customer
+        data_tests:
+          - not_null
+      - name: hasloan
+        description: Whether customer has an active loan with the bank
+        data_tests:
+          - not_null
+
+  - name: dim_account
+    description: >
+      Account dimension table containing all account types.
+      SCD Type 1 - overwrites with latest values.
+    columns:
+      - name: account_id
+        description: Primary key - unique account identifier
+        data_tests:
+          - unique
+          - not_null
+      - name: account_type
+        description: Type of account (savings, checking, money_market)
+        data_tests:
+          - not_null
+      - name: original_balance
+        description: Current account balance
+        data_tests:
+          - not_null
+      - name: customer_id
+        description: Foreign key to dim_customer
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('str_customers')
+              field: customer_id
+
+  - name: fact_customer_balances
+    description: >
+      Fact table containing interest calculations for savings accounts.
+      Only includes savings accounts as they are eligible for interest.
+    columns:
+      - name: account_id
+        description: Primary key - unique account identifier
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Foreign key to dim_customer
+        data_tests:
+          - not_null
+      - name: account_type
+        description: Should always be 'savings' in this fact table
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['savings']
+      - name: original_balance
+        description: Account balance before interest
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: interest_rate
+        description: Applied interest rate (tier rate + loan bonus if applicable)
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+          - dbt_utils.expression_is_true:
+              expression: "<= 0.025"  # Max rate is 2% + 0.5% bonus
+      - name: annual_interest
+        description: Calculated annual interest amount
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: new_balance
+        description: Balance after adding annual interest
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "= original_balance + annual_interest"
+
+unit_tests:
+  - name: test_interest_rate_tier_low_no_loan
+    description: Test interest rate for balance < $10,000 without loan (1%)
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false}
+    expect:
+      rows:
+        - {account_id: 'ACC001', interest_rate: 0.01, annual_interest: 50.00, new_balance: 5050.00}
+
+  - name: test_interest_rate_tier_mid_no_loan
+    description: Test interest rate for balance $10,000-$20,000 without loan (1.5%)
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC002', account_type: 'savings', original_balance: 15000.00, customer_id: 'CUS002', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS002', customer_name: 'Jane Smith', hasloan: false}
+    expect:
+      rows:
+        - {account_id: 'ACC002', interest_rate: 0.015, annual_interest: 225.00, new_balance: 15225.00}
+
+  - name: test_interest_rate_tier_high_no_loan
+    description: Test interest rate for balance > $20,000 without loan (2%)
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC003', account_type: 'savings', original_balance: 25000.00, customer_id: 'CUS003', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS003', customer_name: 'Bob Wilson', hasloan: false}
+    expect:
+      rows:
+        - {account_id: 'ACC003', interest_rate: 0.02, annual_interest: 500.00, new_balance: 25500.00}
+
+  - name: test_interest_rate_with_loan_bonus
+    description: Test interest rate with loan bonus (+0.5%)
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC004', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS004', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS004', customer_name: 'Alice Brown', hasloan: true}
+    expect:
+      rows:
+        - {account_id: 'ACC004', interest_rate: 0.015, annual_interest: 75.00, new_balance: 5075.00}
+
+  - name: test_checking_account_excluded
+    description: Test that checking accounts are excluded from fact table
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC005', account_type: 'checking', original_balance: 10000.00, customer_id: 'CUS005', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS005', customer_name: 'Charlie Davis', hasloan: false}
+    expect:
+      rows: []
+
+  - name: test_boundary_10000_exact
+    description: Test interest rate at exactly $10,000 boundary (should be 1.5%)
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC006', account_type: 'savings', original_balance: 10000.00, customer_id: 'CUS006', modified_date: '2024-01-01'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS006', customer_name: 'Eve Miller', hasloan: false}
+    expect:
+      rows:
+        - {account_id: 'ACC006', interest_rate: 0.015, annual_interest: 150.00, new_balance: 10150.00}
+
+  # Incremental tests for dim_account
+  - name: test_dim_account_initial_load
+    description: Test dim_account initial load processes all accounts
+    model: dim_account
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC002', account_type: 'checking', original_balance: 10000.00, customer_id: 'CUS002', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC003', account_type: 'money_market', original_balance: 25000.00, customer_id: 'CUS003', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001'}
+        - {account_id: 'ACC002', account_type: 'checking', original_balance: 10000.00, customer_id: 'CUS002'}
+        - {account_id: 'ACC003', account_type: 'money_market', original_balance: 25000.00, customer_id: 'CUS003'}
+
+  - name: test_dim_account_incremental_new_accounts
+    description: Test dim_account incremental load processes new accounts
+    model: dim_account
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC004', account_type: 'savings', original_balance: 15000.00, customer_id: 'CUS004', created_date: '2024-01-02 10:00:00', modified_date: '2024-01-02 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {account_id: 'ACC004', account_type: 'savings', original_balance: 15000.00, customer_id: 'CUS004'}
+
+  - name: test_dim_account_incremental_modified_accounts
+    description: Test dim_account incremental load processes modified accounts
+    model: dim_account
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 7500.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-02 11:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', original_balance: 7500.00, customer_id: 'CUS001'}
+
+  - name: test_dim_account_incremental_unchanged_accounts_excluded
+    description: Test dim_account incremental load excludes unchanged accounts
+    model: dim_account
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows: []
+
+  # Incremental tests for dim_customer
+  - name: test_dim_customer_initial_load
+    description: Test dim_customer initial load processes all customers
+    model: dim_customer
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {customer_id: 'CUS002', customer_name: 'Jane Smith', hasloan: true, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false}
+        - {customer_id: 'CUS002', customer_name: 'Jane Smith', hasloan: true}
+
+  - name: test_dim_customer_incremental_new_customers
+    description: Test dim_customer incremental load processes new customers
+    model: dim_customer
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {customer_id: 'CUS003', customer_name: 'Bob Wilson', hasloan: false, created_date: '2024-01-02 10:00:00', modified_date: '2024-01-02 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {customer_id: 'CUS003', customer_name: 'Bob Wilson', hasloan: false}
+
+  - name: test_dim_customer_incremental_modified_customers
+    description: Test dim_customer incremental load processes modified customers
+    model: dim_customer
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe Updated', hasloan: true, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-02 11:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {customer_id: 'CUS001', customer_name: 'John Doe Updated', hasloan: true}
+
+  - name: test_dim_customer_incremental_unchanged_customers_excluded
+    description: Test dim_customer incremental load excludes unchanged customers
+    model: dim_customer
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows: []
+
+  # Incremental tests for fact_customer_balances
+  - name: test_fact_customer_balances_initial_load
+    description: Test fact_customer_balances initial load processes all savings accounts
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC002', account_type: 'savings', original_balance: 15000.00, customer_id: 'CUS002', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC003', account_type: 'checking', original_balance: 10000.00, customer_id: 'CUS003', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {customer_id: 'CUS002', customer_name: 'Jane Smith', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {customer_id: 'CUS003', customer_name: 'Bob Wilson', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', interest_rate: 0.01, annual_interest: 50.00}
+        - {account_id: 'ACC002', account_type: 'savings', interest_rate: 0.015, annual_interest: 225.00}
+
+  - name: test_fact_customer_balances_incremental_new_savings_accounts
+    description: Test fact_customer_balances incremental load processes new savings accounts
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {account_id: 'ACC004', account_type: 'savings', original_balance: 25000.00, customer_id: 'CUS004', created_date: '2024-01-02 10:00:00', modified_date: '2024-01-02 10:00:00', metadata_json: '{}'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+          - {customer_id: 'CUS004', customer_name: 'Alice Brown', hasloan: true, created_date: '2024-01-02 10:00:00', modified_date: '2024-01-02 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', modified_date: '2024-01-01 10:00:00'}
+    expect:
+      rows:
+        - {account_id: 'ACC004', account_type: 'savings', interest_rate: 0.025, annual_interest: 625.00}
+
+  - name: test_fact_customer_balances_incremental_modified_savings_accounts
+    description: Test fact_customer_balances incremental load processes modified savings accounts
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 7500.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-02 11:00:00', metadata_json: '{}'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', modified_date: '2024-01-01 10:00:00'}
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', original_balance: 7500.00, interest_rate: 0.01, annual_interest: 75.00}
+
+  - name: test_fact_customer_balances_incremental_unchanged_excluded
+    description: Test fact_customer_balances incremental load excludes unchanged savings accounts
+    model: fact_customer_balances
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: ref('str_accounts')
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: ref('str_customers')
+        rows:
+          - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: false, created_date: '2024-01-01 10:00:00', modified_date: '2024-01-01 10:00:00', metadata_json: '{}'}
+      - input: this
+        rows:
+          - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001', modified_date: '2024-01-01 10:00:00'}
+    expect:
+      rows: []
+

@@ -1,0 +1,47 @@
+name: 'banking_pipeline'
+version: '1.0.0'
+config-version: 2
+
+profile: 'banking_pipeline'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+vars:
+  # Interest rate tiers
+  tier_1_rate: 0.01      # < $10,000
+  tier_2_rate: 0.015     # $10,000 - $20,000
+  tier_3_rate: 0.02      # > $20,000
+  loan_bonus_rate: 0.005 # +0.5% for customers with loans
+
+models:
+  banking_pipeline:
+    structured:
+      +schema: structured
+      +materialized: incremental
+      +tags: ['structured']
+    curated:
+      +schema: curated
+      +materialized: incremental
+      +tags: ['curated']
+    access:
+      +schema: access
+      +materialized: table
+      +tags: ['access']
+
+seeds:
+  banking_pipeline:
+    +schema: reference
+
+tests:
+  banking_pipeline:
+    +severity: warn
+

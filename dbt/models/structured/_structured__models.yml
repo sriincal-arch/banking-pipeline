@@ -1,0 +1,240 @@
+version: 2
+
+models:
+  - name: str_accounts
+    description: >
+      Structured layer accounts table. Contains cleaned, standardized, and 
+      deduplicated account records. Incremental processing picks up new raw 
+      records and deduplicates by account_id keeping the latest by file timestamp.
+    columns:
+      - name: account_id
+        description: Primary key - unique account identifier
+        data_tests:
+          - unique
+          - not_null
+      - name: account_type
+        description: Type of account (savings, checking, money_market)
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['savings', 'checking', 'money_market']
+      - name: original_balance
+        description: Current account balance in USD
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: customer_id
+        description: Reference to the customer who owns this account
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('str_customers')
+              field: customer_id
+      - name: data_quality_flag
+        description: >
+          Data quality indicator for this record. Values:
+          - VALID: All source data was complete and valid
+          - IMPUTED_NULL_BALANCE: Balance was NULL in source, imputed to 0.00
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['VALID', 'IMPUTED_NULL_BALANCE']
+      - name: created_date
+        description: Timestamp when the record was first created
+      - name: modified_date
+        description: Timestamp when the record was last modified
+      - name: metadata_json
+        description: JSON containing source file info, audit trail, and data quality flags
+      - name: _last_processed_at
+        description: Timestamp of the raw record used for incremental processing
+
+  - name: str_customers
+    description: >
+      Structured layer customers table. Contains cleaned, standardized, and 
+      deduplicated customer records. Incremental processing picks up new raw 
+      records and deduplicates by customer_id keeping the latest by file timestamp.
+    columns:
+      - name: customer_id
+        description: Primary key - unique customer identifier
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: Full name of the customer (proper case)
+        data_tests:
+          - not_null
+      - name: hasloan
+        description: Boolean indicating if customer has an active loan
+        data_tests:
+          - not_null
+      - name: created_date
+        description: Timestamp when the record was first created
+      - name: modified_date
+        description: Timestamp when the record was last modified
+      - name: metadata_json
+        description: JSON containing source file info and audit trail
+      - name: _last_processed_at
+        description: Timestamp of the raw record used for incremental processing
+
+sources:
+  - name: raw
+    schema: raw
+    description: Raw layer tables ingested from MinIO (append-only)
+    tables:
+      - name: raw_accounts
+        description: Raw accounts data as ingested from source files
+      - name: raw_customers
+        description: Raw customers data as ingested from source files
+
+unit_tests:
+  # Incremental tests for str_accounts
+  - name: test_str_accounts_initial_load
+    description: Test str_accounts initial load processes all accounts
+    model: str_accounts
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: source('raw', 'raw_accounts')
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as AccountID, 'savings'::varchar as AccountType, '5000.00'::varchar as Balance, 'CUS001'::varchar as CustomerID, '2024-01-01 10:00:00'::varchar as _ingested_at, 'accounts1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'ACC002'::varchar, 'checking'::varchar, '10000.00'::varchar, 'CUS002'::varchar, '2024-01-01 10:00:00'::varchar, 'accounts1.csv'::varchar, 'hash1'::varchar, 2::integer
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', original_balance: 5000.00, customer_id: 'CUS001'}
+        - {account_id: 'ACC002', account_type: 'checking', original_balance: 10000.00, customer_id: 'CUS002'}
+
+  - name: test_str_accounts_incremental_new_accounts
+    description: Test str_accounts incremental load processes new accounts after last processed timestamp
+    model: str_accounts
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: source('raw', 'raw_accounts')
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as AccountID, 'savings'::varchar as AccountType, '5000.00'::varchar as Balance, 'CUS001'::varchar as CustomerID, '2024-01-01 10:00:00'::varchar as _ingested_at, 'accounts1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'ACC003'::varchar, 'savings'::varchar, '15000.00'::varchar, 'CUS003'::varchar, '2024-01-02 10:00:00'::varchar, 'accounts2.csv'::varchar, 'hash2'::varchar, 1::integer
+      - input: this
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as account_id, 'savings'::varchar as account_type, 5000.00::decimal as original_balance, 'CUS001'::varchar as customer_id, '2024-01-01 10:00:00'::timestamp as created_date, '2024-01-01 10:00:00'::timestamp as modified_date, '{}'::json as metadata_json, '2024-01-01 10:00:00'::timestamp as _last_processed_at
+    expect:
+      rows:
+        - {account_id: 'ACC003', account_type: 'savings', original_balance: 15000.00, customer_id: 'CUS003'}
+
+  - name: test_str_accounts_incremental_old_accounts_excluded
+    description: Test str_accounts incremental load excludes accounts ingested before last processed timestamp
+    model: str_accounts
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: source('raw', 'raw_accounts')
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as AccountID, 'savings'::varchar as AccountType, '5000.00'::varchar as Balance, 'CUS001'::varchar as CustomerID, '2024-01-01 10:00:00'::varchar as _ingested_at, 'accounts1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+      - input: this
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as account_id, 'savings'::varchar as account_type, 5000.00::decimal as original_balance, 'CUS001'::varchar as customer_id, '2024-01-01 10:00:00'::timestamp as created_date, '2024-01-01 10:00:00'::timestamp as modified_date, '{}'::json as metadata_json, '2024-01-01 10:00:00'::timestamp as _last_processed_at
+    expect:
+      rows: []
+
+  - name: test_str_accounts_deduplication_latest_wins
+    description: Test str_accounts deduplicates by account_id keeping latest by ingestion timestamp
+    model: str_accounts
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: source('raw', 'raw_accounts')
+        format: sql
+        rows: |
+          select 'ACC001'::varchar as AccountID, 'savings'::varchar as AccountType, '5000.00'::varchar as Balance, 'CUS001'::varchar as CustomerID, '2024-01-01 10:00:00'::varchar as _ingested_at, 'accounts1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'ACC001'::varchar, 'savings'::varchar, '7500.00'::varchar, 'CUS001'::varchar, '2024-01-02 10:00:00'::varchar, 'accounts2.csv'::varchar, 'hash2'::varchar, 1::integer
+    expect:
+      rows:
+        - {account_id: 'ACC001', account_type: 'savings', original_balance: 7500.00, customer_id: 'CUS001'}
+
+  # Incremental tests for str_customers
+  - name: test_str_customers_initial_load
+    description: Test str_customers initial load processes all customers
+    model: str_customers
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: source('raw', 'raw_customers')
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as CustomerID, 'john doe'::varchar as Name, 'true'::varchar as HasLoan, '2024-01-01 10:00:00'::varchar as _ingested_at, 'customers1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'CUS002'::varchar, 'jane smith'::varchar, 'false'::varchar, '2024-01-01 10:00:00'::varchar, 'customers1.csv'::varchar, 'hash1'::varchar, 2::integer
+    expect:
+      rows:
+        - {customer_id: 'CUS001', customer_name: 'John Doe', hasloan: true}
+        - {customer_id: 'CUS002', customer_name: 'Jane Smith', hasloan: false}
+
+  - name: test_str_customers_incremental_new_customers
+    description: Test str_customers incremental load processes new customers after last processed timestamp
+    model: str_customers
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: source('raw', 'raw_customers')
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as CustomerID, 'john doe'::varchar as Name, 'true'::varchar as HasLoan, '2024-01-01 10:00:00'::varchar as _ingested_at, 'customers1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'CUS003'::varchar, 'bob wilson'::varchar, 'false'::varchar, '2024-01-02 10:00:00'::varchar, 'customers2.csv'::varchar, 'hash2'::varchar, 1::integer
+      - input: this
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as customer_id, 'John Doe'::varchar as customer_name, true::boolean as hasloan, '2024-01-01 10:00:00'::timestamp as created_date, '2024-01-01 10:00:00'::timestamp as modified_date, '{}'::json as metadata_json, '2024-01-01 10:00:00'::timestamp as _last_processed_at
+    expect:
+      rows:
+        - {customer_id: 'CUS003', customer_name: 'Bob Wilson', hasloan: false}
+
+  - name: test_str_customers_incremental_old_customers_excluded
+    description: Test str_customers incremental load excludes customers ingested before last processed timestamp
+    model: str_customers
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: source('raw', 'raw_customers')
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as CustomerID, 'john doe'::varchar as Name, 'true'::varchar as HasLoan, '2024-01-01 10:00:00'::varchar as _ingested_at, 'customers1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+      - input: this
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as customer_id, 'John Doe'::varchar as customer_name, true::boolean as hasloan, '2024-01-01 10:00:00'::timestamp as created_date, '2024-01-01 10:00:00'::timestamp as modified_date, '{}'::json as metadata_json, '2024-01-01 10:00:00'::timestamp as _last_processed_at
+    expect:
+      rows: []
+
+  - name: test_str_customers_deduplication_latest_wins
+    description: Test str_customers deduplicates by customer_id keeping latest by ingestion timestamp
+    model: str_customers
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: source('raw', 'raw_customers')
+        format: sql
+        rows: |
+          select 'CUS001'::varchar as CustomerID, 'john doe'::varchar as Name, 'true'::varchar as HasLoan, '2024-01-01 10:00:00'::varchar as _ingested_at, 'customers1.csv'::varchar as _source_file, 'hash1'::varchar as _file_hash, 1::integer as _row_number
+          union all
+          select 'CUS001'::varchar, 'john doe updated'::varchar, 'false'::varchar, '2024-01-02 10:00:00'::varchar, 'customers2.csv'::varchar, 'hash2'::varchar, 1::integer
+    expect:
+      rows:
+        - {customer_id: 'CUS001', customer_name: 'John Doe Updated', hasloan: false}
+

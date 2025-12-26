@@ -1,0 +1,48 @@
+version: 2
+
+models:
+  - name: account_summary
+    description: >
+      Final account summary report for export. Contains interest calculations
+      for all eligible savings accounts. This is the output that gets exported
+      to account_summary.csv in the access bucket.
+    columns:
+      - name: customer_id
+        description: Customer identifier
+        data_tests:
+          - not_null
+      - name: account_id
+        description: Account identifier (unique in this report)
+        data_tests:
+          - unique
+          - not_null
+      - name: original_balance
+        description: Account balance before interest calculation
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: interest_rate
+        description: >
+          Applied interest rate including base tier rate and loan bonus.
+          Range: 0.01 (1%) to 0.025 (2.5%)
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0.01"
+          - dbt_utils.expression_is_true:
+              expression: "<= 0.025"
+      - name: annual_interest
+        description: Calculated annual interest (original_balance * interest_rate)
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+      - name: new_balance
+        description: Balance after interest (original_balance + annual_interest)
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= original_balance"
+
+

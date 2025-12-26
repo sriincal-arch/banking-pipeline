@@ -1,0 +1,25 @@
+banking_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE', '/opt/dagster/data/banking.duckdb') }}"
+      threads: 1  # Reduced from 4 to 1 to prevent concurrent write locks in DuckDB
+      extensions:
+        - json
+
+    test:
+      type: duckdb
+      path: ":memory:"
+      threads: 4
+      extensions:
+        - json
+
+    prod:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_DATABASE', '/data/banking.duckdb') }}"
+      threads: 8
+      extensions:
+        - json
+
+
