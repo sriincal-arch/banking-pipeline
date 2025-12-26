@@ -1,0 +1,9 @@
+CustomerID,Name,HasLoan
+101,alice smith,Yes
+102,BOB JONES,no
+103,  Charlie Brown ,YES
+104,DAVID LEE,No
+105,eve Adams,None
+106,Frank O'Connor,yes
+
+

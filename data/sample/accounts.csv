@@ -1,0 +1,10 @@
+AccountID,CustomerID,Balance,AccountType
+A001,101,10000,Savings
+A002,102,20000,Checking
+A003,103,10000,Savings
+A004,104,,Savings
+A005,105,30000,Checking
+A006,105,15000,Savings
+A007,106,5000,savings
+
+
