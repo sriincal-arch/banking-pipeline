@@ -8,7 +8,19 @@ Ingests two CSV files (accounts and customers), cleans the data, calculates inte
 
 ## Prerequisites
 
-Install Docker Desktop
+**macOS:**
+```bash
+brew install --cask docker
+```
+Then open Docker Desktop application from Applications folder.
+
+**Windows:**
+1. Download Docker Desktop from https://www.docker.com/products/docker-desktop/
+2. Run the installer and enable WSL 2 (recommended)
+3. Restart if prompted
+4. Launch Docker Desktop from Start menu
+
+**Verify installation:**
 ```bash
 docker --version  # Should be 20.10+
 ```
